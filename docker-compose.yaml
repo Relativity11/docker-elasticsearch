@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  #Temporary setup container to set kibana_system password and index.refresh_interval
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.3
+    container_name: elasticsearch-setup
+    restart: "no"
+    entrypoint: >
+      bash -c '
+        echo "Waiting for Elasticsearch...";
+        until curl -s http://elasticsearch:9200 | grep -q "missing authentication credentials"; do sleep 5; done;
+
+        echo "Setting kibana_system password...";
+        curl -X POST -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" \
+          http://elasticsearch:9200/_security/user/kibana_system/_password \
+          -d "{\"password\":\"${KIBANA_PASSWORD}\"}";
+
+        echo "Setting index refresh interval...";
+        curl -X PUT -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" \
+          http://elasticsearch:9200/_all/_settings \
+          -d "{\"index.refresh_interval\": \"120s\"}";
+
+
+       curl -X PUT -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" \
+          http://elasticsearch:9200/_all/_settings \
+          -d "{\"index.translog.durability\": \"async\"}"
+
+
+       echo "Disabling replicas for better performance...";
+       curl -X PUT -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" \
+         http://elasticsearch:9200/_all/_settings \
+         -d "{\"index.number_of_replicas\": \"0\"}";
+
+        echo "Setup complete!";
+      '
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - KIBANA_PASSWORD=${KIBANA_PASSWORD}
+    networks:
+      - elastic-network
+    depends_on:
+      - elasticsearch
+
+  #Elasticsearch container
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.3
+    container_name: elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}  #Set via .env file
+    networks:
+      - elastic-network
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - /volume2/docker/elastic/elasticsearch/data:/usr/share/elasticsearch/data  #Persist Elasticsearch data
+
+  #Kibana container
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.3
+    container_name: kibana
+    restart: unless-stopped
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}  #Set via .env file
+    networks:
+      - elastic-network
+    ports:
+      - "5601:5601"
+    depends_on:
+      setup:
+        condition: service_completed_successfully  # Kibana only starts after setup runs
+    volumes:
+      - /volume2/docker/elastic/kibana/data:/usr/share/kibana/data  #Persist Kibana data
+
+networks:
+  elastic-network:
+
+volumes: {}
